@@ -80,43 +80,11 @@ function ns.ReadZone()
     return zone
 end
 
-function ns.LocalQuests(zone)
-    local ids, maps = {}, {}
-    if zone.area then maps[zone.area.id] = true end
-    if zone.mapID then maps[zone.mapID] = true end
-    for mapID in pairs(maps) do
-        local points = call(C_QuestLog.GetQuestsOnMap, mapID)
-        if type(points) == "table" then
-            for _, point in ipairs(points) do
-                -- Zone/continent entrance indicators are not local objectives.
-                if point.questID and not point.isMapIndicatorQuest then
-                    ids[point.questID] = true
-                end
-            end
-        end
-    end
-    return ids
-end
-
-function ns.IsRelevant(quest, zone, localIDs)
-    local headerMatches = zone.names[nameKey(quest.header)] == true
-    -- Dungeon quests can point to an outdoor entrance/turn-in even while the
-    -- player is inside; their actual dungeon category remains useful there.
-    if zone.inInstance and headerMatches then return true, "dungeon category" end
-    if localIDs[quest.id] then return true, "local quest objective" end
-
-    -- true = ignore travel waypoints. Without it a boat/flight connection can
-    -- make a quest on another continent look like a quest for this zone.
-    local mapID
-    if type(GetQuestUiMapID) == "function" then
-        local ok, result = pcall(GetQuestUiMapID, quest.id, true)
-        if ok then mapID = result end
-    end
-    local destination = ns.MapArea(mapID, zone.cache)
-    if destination then
-        return zone.area ~= nil and destination.id == zone.area.id, "quest destination"
-    end
-    -- Do not use GetInfo().isOnMap: it can refer to the map being viewed,
-    -- which need not be the map where the character is standing.
-    return headerMatches, "quest category"
+function ns.IsRelevant(quest, zone)
+    -- Match the same zone/dungeon category the player sees in the quest log.
+    -- Quest POIs and destination maps can disagree with that category on
+    -- Forever (for example, a Badlands quest appearing local in Riverglades).
+    -- They must neither promote an unrelated quest nor hide a local one.
+    -- Explicit cross-zone pins are handled separately by Core.lua.
+    return zone.names[nameKey(quest.header)] == true, "quest category"
 end

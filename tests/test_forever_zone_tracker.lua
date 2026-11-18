@@ -25,6 +25,7 @@ local function newClient(options)
             [10] = { name = "Badlands", mapType = 3, parentMapID = 1 },
             [11] = { name = "Uldaman Excavation", mapType = 5, parentMapID = 10 },
             [20] = { name = "Stranglethorn Vale", mapType = 3, parentMapID = 1 },
+            [2548] = { name = "Riverglades", mapType = 3, parentMapID = 1 },
             [40] = { name = "The Drowned City", mapType = 4, parentMapID = 20 },
             [41] = { name = "Lower Floor", mapType = 4, parentMapID = 40 },
             [42] = { name = "Chamber", mapType = 5, parentMapID = 41 },
@@ -212,20 +213,20 @@ test("off restores baseline and on takes a fresh snapshot", function()
     s:command("on") s:expectWatches(101, 102)
     s:command("off") s:expectWatches(201)
 end)
-test("map POIs allow quests with objectives in multiple zones", function()
+test("map POIs cannot promote a quest from another category", function()
     local s = newClient({ points = { [10] = { { questID = 201 } } } })
-    s:expectWatches(101, 102, 201)
+    s:expectWatches(101, 102)
 end)
 test("entrance indicator pins do not make distant quests local", function()
     local s = newClient({ points = { [10] = { { questID = 201, isMapIndicatorQuest = true } } } })
     s:expectWatches(101, 102)
 end)
-test("destination overrides old quest category after quest progress", function()
+test("quest category remains authoritative when its destination changes", function()
     local s = newClient() s.quests[1].destination = 20
-    s:emit("QUEST_LOG_UPDATE") s:advance() s:expectWatches(102)
-    s:zone(20, "Stranglethorn Vale") s:expectWatches(101, 201)
+    s:emit("QUEST_LOG_UPDATE") s:advance() s:expectWatches(101, 102)
+    s:zone(20, "Stranglethorn Vale") s:expectWatches(201)
 end)
-test("missing destination falls back to localized category", function()
+test("missing destination does not interfere with localized category", function()
     local s = newClient({ destinationError = true }) s:expectWatches(101, 102) s:assertNoErrors()
 end)
 test("normalizes colored category and whitespace", function()
@@ -397,5 +398,24 @@ test("local quest navigation focus restored only when cleared", function()
 end)
 test("map errors leave existing watch choices untouched", function()
     local s = newClient({ mapError = true }) s:expectWatches(101, 201) s:assertNoErrors()
+end)
+test("Riverglades excludes Badlands despite a misleading local pin and destination", function()
+    local s = newClient({ map = 2548, realZone = "Riverglades", watches = { 201 },
+        quests = { quest(301, "Riverglades", 2548),
+            quest(201, "Badlands", 2548, { title = "Broken Alliances" }) },
+        points = { [2548] = { { questID = 201 } } },
+    })
+    s:expectWatches(301)
+    eq(next(s.env.ForeverZoneTrackerDB.pinned), nil)
+    s:command("pin Broken Alliances") s:expectWatches(201, 301)
+    s:command("unpin Broken Alliances") s:expectWatches(301)
+end)
+test("Riverglades keeps its category quests despite distant or missing map data", function()
+    local s = newClient({ map = 2548, realZone = "Riverglades", watches = {},
+        quests = { quest(301, "Riverglades", 20), quest(302, "Riverglades", nil),
+            quest(401, "Alchemy", 2548) },
+        points = { [2548] = { { questID = 401 } } },
+    })
+    s:expectWatches(301, 302)
 end)
 print(string.format("%d tests passed under %s", passed, _VERSION))

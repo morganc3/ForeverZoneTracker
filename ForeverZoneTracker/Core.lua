@@ -3,6 +3,7 @@ local frame = CreateFrame("Frame")
 local db, loggedIn, inWorld, applying, scheduled, ready
 local lastZone, lastStats, lastError
 local REFRESH_DELAY = 0.35
+local VERSION = "1.0.1"
 
 local function say(message)
     if DEFAULT_CHAT_FRAME then
@@ -103,10 +104,9 @@ local function refreshBody()
             db.baseline[quest.id] = watched[quest.id] == true
         end
     end
-    local localIDs = ns.LocalQuests(zone)
     local wanted, matching, excluded, pinned, desired = {}, 0, 0, 0, 0
     for _, quest in ipairs(quests) do
-        local relevant = ns.IsRelevant(quest, zone, localIDs)
+        local relevant = ns.IsRelevant(quest, zone)
         if relevant then matching = matching + 1 end
         if db.pinned[quest.id] then
             wanted[quest.id] = true
@@ -184,7 +184,8 @@ local function requestRefresh()
 end
 
 local function status()
-    say((db.enabled and "ON" or "OFF") .. "; zone: " .. (lastZone and lastZone.name or "waiting"))
+    say("v" .. VERSION .. " " .. (db.enabled and "ON" or "OFF")
+        .. "; zone: " .. (lastZone and lastZone.name or "waiting") .. " (quest-log categories)")
     if lastStats and lastStats.waiting then
         say("Waiting for the player's zone map; current watches have been left alone.")
     elseif lastStats and db.enabled then
