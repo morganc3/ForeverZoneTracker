@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Forever Zone Tracker
+## Notes: Automatically tracks quests for your current zone using the native quest tracker.
+## Version: 1.0.0
+## SavedVariablesPerCharacter: ForeverZoneTrackerDB
+
+ZoneResolver.lua
+Core.lua
+Menu.lua
