@@ -54,28 +54,36 @@ function ns.ReadZone()
     local instanceName = inInstance and call(GetInstanceInfo) or nil
     local realName = call(GetRealZoneText)
 
-    -- The client may not have a map during loading, on transport, or in a
-    -- new instance. Do not clear the tracker on an unknown outdoor map.
+    -- Quest categories need a zone NAME, not a map ID. Map data can lag behind
+    -- a zone transition or be unavailable even when GetRealZoneText is valid.
     if inInstance and (not area or area.kind ~= DUNGEON) then
         area, mapID = nil, nil
     end
-    if not area and not (inInstance and nameKey(instanceName)) then return nil end
-
     local names = {}
     local function add(name)
         local key = nameKey(name)
         if key then names[key] = true end
     end
-    if area then add(area.name) end
-    add(realName)
-    if inInstance then add(instanceName) end
+    local name
+    if inInstance then
+        if area then add(area.name) end
+        add(instanceName)
+        name = nameKey(instanceName) and instanceName or (area and area.name)
+    elseif nameKey(realName) then
+        -- Never retain a stale map's old zone as an additional matching name.
+        add(realName)
+        name = realName
+    elseif area then
+        add(area.name)
+        name = area.name
+    end
+    if not nameKey(name) then return nil end
 
     local zone = {
         mapID = mapID, area = area, cache = cache, names = names,
         inInstance = inInstance,
-        name = instanceName or (area and area.name) or realName,
-        key = inInstance and ("instance:" .. (instanceName or tostring(area.id)))
-            or ("map:" .. area.id),
+        name = name,
+        key = (inInstance and "instance:" or "zone:") .. nameKey(name),
     }
     return zone
 end

@@ -1,9 +1,10 @@
 ## Interface: 16001
 ## Title: Forever Zone Tracker
 ## Notes: Tracks quests matching your current quest-log zone or dungeon category, plus explicit pins.
-## Version: 1.0.1
+## Version: 1.0.2
 ## SavedVariablesPerCharacter: ForeverZoneTrackerDB
 
 ZoneResolver.lua
+QuestLog.lua
 Core.lua
 Menu.lua

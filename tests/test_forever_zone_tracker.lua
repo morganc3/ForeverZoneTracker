@@ -19,7 +19,7 @@ local function newClient(options)
         },
         watches = { 101, 201 }, calls = {}, timers = {}, now = 0,
         messages = {}, frames = {}, menuMods = {}, points = {}, cap = 25,
-        focus = 0, focusWrites = 0,
+        focus = 0, focusWrites = 0, collapsedHeaders = {}, headerEdits = 0,
         maps = {
             [1] = { name = "Eastern Kingdoms", mapType = 2, parentMapID = 0 },
             [10] = { name = "Badlands", mapType = 3, parentMapID = 1 },
@@ -59,14 +59,20 @@ local function newClient(options)
         self.now = target
     end
     function s:rows()
-        local rows, last = {}, nil
+        local rows, last, headerNumber = {}, nil, 0
         for _, q in ipairs(self.quests) do
+            local collapsed = self.collapsedHeaders[q.header]
+            if collapsed == nil then collapsed = self.collapsed end
             if q.header and q.header ~= last then
-                rows[#rows + 1] = { isHeader = true, title = q.header, isCollapsed = self.collapsed }
+                headerNumber = headerNumber + 1
+                rows[#rows + 1] = { isHeader = true, title = q.header, isCollapsed = collapsed,
+                    headerSortKey = not self.noHeaderKeys and headerNumber or nil, questLogIndex = #rows + 1 }
                 last = q.header
             end
-            rows[#rows + 1] = { questID = q.id, title = q.title,
-                isHidden = q.hidden, isTask = q.task, isBounty = q.bounty, isOnMap = q.isOnMap }
+            if not (self.hideCollapsed and collapsed) then
+                rows[#rows + 1] = { questID = q.id, title = q.title, questLogIndex = #rows + 1,
+                    isHidden = q.hidden, isTask = q.task, isBounty = q.bounty, isOnMap = q.isOnMap }
+            end
         end
         return rows
     end
@@ -109,6 +115,23 @@ local function newClient(options)
     env.SlashCmdList = {}
     env.ForeverZoneTrackerDB = s.saved
     env.InCombatLockdown = function() return s.combat == true end
+    env.GetTime = function() return s.now end
+    env.ExpandQuestHeader = function(index)
+        assert(not s.combat, "header expansion during combat")
+        local header = s:rows()[index]
+        assert(header and header.isHeader, "wrong header index expanded")
+        if s.failExpand == header.title then error("simulated expansion failure") end
+        s.collapsedHeaders[header.title] = false s.headerEdits = s.headerEdits + 1
+        s:emit("QUEST_LOG_UPDATE")
+    end
+    env.CollapseQuestHeader = function(index)
+        assert(not s.combat, "header collapse during combat")
+        local header = s:rows()[index]
+        assert(header and header.isHeader, "wrong header index collapsed")
+        if s.failCollapse == header.title then error("simulated collapse failure") end
+        s.collapsedHeaders[header.title] = true s.headerEdits = s.headerEdits + 1
+        s:emit("QUEST_LOG_UPDATE")
+    end
     env.IsInInstance = function() return s.instance ~= nil, s.instance and "party" or "none" end
     env.GetInstanceInfo = function() return s.instance end
     env.GetRealZoneText = function() return s.realZone end
@@ -177,7 +200,7 @@ local function newClient(options)
     env.Menu = { ModifyMenu = function(tag, modifier) s.menuMods[tag] = modifier end }
     if s.beforeLoad then s.beforeLoad(env) end
     s.ns = {}
-    for _, file in ipairs({ "ZoneResolver.lua", "Core.lua", "Menu.lua" }) do
+    for _, file in ipairs({ "ZoneResolver.lua", "QuestLog.lua", "Core.lua", "Menu.lua" }) do
         local chunk = assert(loadfile(addonDir .. "/" .. file))
         setfenv(chunk, env)("ForeverZoneTracker", s.ns)
     end
@@ -189,6 +212,7 @@ local function newClient(options)
 end
 
 local function test(name, fn)
+    if TEST_FILTER and not name:find(TEST_FILTER, 1, true) then return end
     local ok, err = pcall(fn)
     if not ok then error("FAIL " .. name .. ": " .. tostring(err), 0) end
     passed = passed + 1
@@ -238,7 +262,7 @@ test("viewed-map flags never influence player zone filtering", function()
         quest(201, "Stranglethorn Vale", 20, { isOnMap = true }) } }) s:expectWatches(101)
 end)
 test("micro maps use their surrounding zone", function()
-    local s = newClient() s:zone(11, "Uldaman Excavation") s:expectWatches(101, 102)
+    local s = newClient() s:zone(11, "Badlands") s:expectWatches(101, 102)
 end)
 test("dungeon floors group under dungeon without outdoor quests", function()
     local s = newClient({ quests = { quest(101, "Badlands", 10), quest(201, "Stranglethorn Vale", 20),
@@ -256,12 +280,12 @@ test("stale outdoor map in instance does not match outdoor quests", function()
     s:zone(20, "The Drowned City", "The Drowned City") s:expectWatches(401)
 end)
 test("missing player map leaves watch list alone and later recovers", function()
-    local s = newClient() s:zone(nil, "Unknown") s:expectWatches(101, 102)
+    local s = newClient() s:zone(nil, "") s:expectWatches(101, 102)
     s.map, s.realZone = 20, "Stranglethorn Vale"
     s:advance(5.5) s:expectWatches(201)
 end)
-test("continent map is not treated as an entire quest zone", function()
-    local s = newClient() s:zone(1, "Eastern Kingdoms") s:expectWatches(101, 102)
+test("continent map does not override the actual zone name", function()
+    local s = newClient() s:zone(1, "Stranglethorn Vale") s:expectWatches(201)
 end)
 test("loading screens suspend updates", function()
     local s = newClient() s:emit("PLAYER_LEAVING_WORLD")
@@ -325,7 +349,7 @@ test("newly accepted quests join automatic local tracking", function()
 end)
 test("pinned quest stays visible across zones and reload", function()
     local s = newClient() s:command("pin 201") s:expectWatches(101, 102, 201)
-    s:zone(11, "Uldaman Excavation") s:expectWatches(101, 102, 201)
+    s:zone(11, "Badlands") s:expectWatches(101, 102, 201)
     local r = newClient({ saved = s.env.ForeverZoneTrackerDB, watches = s.watches })
     r:expectWatches(101, 102, 201) r:command("unpin 201") r:expectWatches(101, 102)
 end)
@@ -396,8 +420,8 @@ test("local quest navigation focus restored only when cleared", function()
     eq(s.focus, 101) eq(s.focusWrites, 1)
     local r = newClient({ focus = 0 }) eq(r.focusWrites, 0)
 end)
-test("map errors leave existing watch choices untouched", function()
-    local s = newClient({ mapError = true }) s:expectWatches(101, 201) s:assertNoErrors()
+test("map errors do not prevent filtering by a valid zone name", function()
+    local s = newClient({ mapError = true }) s:expectWatches(101, 102) s:assertNoErrors()
 end)
 test("Riverglades excludes Badlands despite a misleading local pin and destination", function()
     local s = newClient({ map = 2548, realZone = "Riverglades", watches = { 201 },
@@ -417,5 +441,98 @@ test("Riverglades keeps its category quests despite distant or missing map data"
         points = { [2548] = { { questID = 401 } } },
     })
     s:expectWatches(301, 302)
+end)
+test("entering Badlands still updates when player map is unavailable", function()
+    local s = newClient({ map = 20, realZone = "Stranglethorn Vale" })
+    s:expectWatches(201)
+    s:zone(nil, "Badlands")
+    s:expectWatches(101, 102)
+end)
+test("zone change succeeds with collapsed quest categories and restores them", function()
+    local s = newClient({ map = 20, realZone = "Stranglethorn Vale", hideCollapsed = true })
+    s:expectWatches(201)
+    s.collapsedHeaders = { Badlands = true, ["Stranglethorn Vale"] = true }
+    s:zone(10, "Badlands")
+    s:expectWatches(101, 102)
+    eq(s.collapsedHeaders.Badlands, true)
+    eq(s.collapsedHeaders["Stranglethorn Vale"], true)
+    s:zone(20, "Stranglethorn Vale") s:expectWatches(201)
+    s:command("off") s:expectWatches(101, 201)
+end)
+test("stale map data cannot keep the previous zone visible", function()
+    local s = newClient({ map = 20, realZone = "Stranglethorn Vale" })
+    s:zone(20, "Badlands") s:expectWatches(101, 102)
+    s:command("status")
+    assert(table.concat(s.messages, "\n"):find("current zone: Badlands", 1, true))
+end)
+test("zone filtering works when the entire map API is unavailable", function()
+    local s = newClient({ beforeLoad = function(env) env.C_Map = nil end })
+    s:expectWatches(101, 102)
+    s:zone(nil, "Stranglethorn Vale") s:expectWatches(201)
+end)
+test("timer fallback recovers missed zone events without NewTicker", function()
+    local s = newClient({ beforeLoad = function(env) env.C_Timer.NewTicker = nil end })
+    s.realZone, s.map = "Stranglethorn Vale", nil
+    s:advance(5.5) s:expectWatches(201)
+    s.realZone = "Badlands"
+    s:advance(5.5) s:expectWatches(101, 102)
+end)
+test("mixed collapsed categories preserve the player's layout", function()
+    local s = newClient({ hideCollapsed = true,
+        collapsedHeaders = { Badlands = true, ["Stranglethorn Vale"] = false } })
+    s:expectWatches(101, 102)
+    eq(s.collapsedHeaders.Badlands, true)
+    eq(s.collapsedHeaders["Stranglethorn Vale"], false)
+end)
+test("collapsed category recovery also works without header sort keys", function()
+    local s = newClient({ hideCollapsed = true, noHeaderKeys = true,
+        collapsedHeaders = { Badlands = true, ["Stranglethorn Vale"] = true } })
+    s:expectWatches(101, 102)
+    eq(s.collapsedHeaders.Badlands, true)
+    eq(s.collapsedHeaders["Stranglethorn Vale"], true)
+end)
+test("expansion failure restores categories before retrying", function()
+    local s = newClient({ hideCollapsed = true, failExpand = "Badlands",
+        collapsedHeaders = { Badlands = true, ["Stranglethorn Vale"] = true } })
+    s:expectWatches(101, 201)
+    eq(s.collapsedHeaders.Badlands, true)
+    eq(s.collapsedHeaders["Stranglethorn Vale"], true)
+    s.failExpand = nil s:advance(5.5) s:expectWatches(101, 102)
+end)
+test("failed header restoration recovers on the next update", function()
+    local s = newClient({ hideCollapsed = true, failCollapse = "Badlands",
+        collapsedHeaders = { Badlands = true, ["Stranglethorn Vale"] = true } })
+    s:expectWatches(101, 201)
+    s:command("status")
+    assert(table.concat(s.messages, "\n"):find("Header restoration failed", 1, true))
+    s.failCollapse = nil s:advance(5.5) s:expectWatches(101, 102)
+    eq(s.collapsedHeaders.Badlands, true)
+    eq(s.collapsedHeaders["Stranglethorn Vale"], true)
+end)
+test("collapsed headers are never expanded in combat", function()
+    local s = newClient({ hideCollapsed = true, combat = true,
+        collapsedHeaders = { Badlands = true, ["Stranglethorn Vale"] = true } })
+    s:expectWatches(101, 201) eq(s.headerEdits, 0)
+    s.combat = false s:emit("PLAYER_REGEN_ENABLED") s:advance()
+    s:expectWatches(101, 102) eq(s.collapsedHeaders.Badlands, true)
+end)
+test("status names the current zone and blocked scan instead of stale counts", function()
+    local s = newClient({ map = 20, realZone = "Stranglethorn Vale" })
+    s.totalOverride = 10 s:zone(10, "Badlands") s:expectWatches(201)
+    s.messages = {} s:command("status")
+    local report = table.concat(s.messages, "\n")
+    assert(report:find("current zone: Badlands", 1, true))
+    assert(report:find("Quest log incomplete: 3 of 10", 1, true))
+    assert(report:find("Last applied zone: Stranglethorn Vale", 1, true))
+    assert(not report:find("1 shown", 1, true))
+    s.totalOverride = nil s:advance(5.5) s:expectWatches(101, 102)
+end)
+test("missing header APIs leave partial data untouched with a clear reason", function()
+    local s = newClient({ hideCollapsed = true,
+        collapsedHeaders = { Badlands = true },
+        beforeLoad = function(env) env.ExpandQuestHeader = nil end })
+    s:expectWatches(101, 201) eq(s.headerEdits, 0)
+    s:command("status")
+    assert(table.concat(s.messages, "\n"):find("Quest log incomplete", 1, true))
 end)
 print(string.format("%d tests passed under %s", passed, _VERSION))

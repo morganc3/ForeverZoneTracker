@@ -1,9 +1,9 @@
 local ADDON_NAME, ns = ...
 local frame = CreateFrame("Frame")
 local db, loggedIn, inWorld, applying, scheduled, ready
-local lastZone, lastStats, lastError
+local lastZone, lastStats, lastError, lastPause, lastSuccess, lastEvent
 local REFRESH_DELAY = 0.35
-local VERSION = "1.0.1"
+local VERSION = "1.0.2"
 
 local function say(message)
     if DEFAULT_CHAT_FRAME then
@@ -12,35 +12,17 @@ local function say(message)
 end
 
 local function supported()
-    if not C_QuestLog or not C_Map then return false end
+    if not C_QuestLog then return false end
     for _, key in ipairs({ "GetNumQuestLogEntries", "GetInfo", "GetNumQuestWatches",
         "GetQuestIDForQuestWatchIndex", "AddQuestWatch", "RemoveQuestWatch" }) do
         if type(C_QuestLog[key]) ~= "function" then return false end
     end
-    return type(C_Map.GetBestMapForUnit) == "function" and type(C_Map.GetMapInfo) == "function"
+    return type(GetRealZoneText) == "function" or (C_Map
+        and type(C_Map.GetBestMapForUnit) == "function" and type(C_Map.GetMapInfo) == "function")
 end
 
 local function readLog()
-    local count, total = C_QuestLog.GetNumQuestLogEntries()
-    if type(count) ~= "number" then return nil end
-    local quests, byID, header, seen = {}, {}, nil, 0
-    for index = 1, count do
-        local info = C_QuestLog.GetInfo(index)
-        if not info then return nil end -- partial server data: leave watches alone
-        if info.isHeader then
-            header = info.title
-        elseif type(info.questID) == "number" and info.questID > 0 then
-            seen = seen + 1
-            if not info.isHidden and not info.isTask and not info.isBounty then
-                local quest = { id = info.questID, title = info.title, header = header }
-                quests[#quests + 1], byID[quest.id] = quest, quest
-            end
-        end
-    end
-    -- Modern Forever exposes children of collapsed headers (the UI filters
-    -- them afterwards). Fail open if a future build exposes only some quests.
-    if type(total) == "number" and seen < total then return nil end
-    return quests, byID
+    return ns.ReadQuestLog()
 end
 
 local function readWatches()
@@ -83,17 +65,18 @@ local function restore(quests, byID)
 end
 
 local function refreshBody()
-    if not ready or not db or not loggedIn or not inWorld or not supported() then return end
-    if InCombatLockdown and InCombatLockdown() then return end
-    local quests, byID = readLog()
-    if not quests then return end
+    if not ready or not db or not supported() then lastPause = "Required addon APIs are not ready." return end
+    if not loggedIn or not inWorld then lastPause = "Waiting for the world to finish loading." return end
+    if InCombatLockdown and InCombatLockdown() then lastPause = "Waiting for combat to end." return end
+    local quests, byID, reason = readLog()
+    if not quests then lastPause = reason or "Quest log data is unavailable." return end
     if not db.enabled then
         restore(quests, byID)
         return
     end
     local zone = ns.ReadZone()
     if not zone then
-        lastStats = { waiting = true }
+        lastPause = "The current zone name is unavailable."
         return
     end
     lastZone = zone
@@ -162,7 +145,7 @@ end
 
 function ns.Refresh()
     if applying then return end
-    applying = true
+    applying, lastPause = true, nil
     local ok, err = pcall(refreshBody)
     applying = false
     if not ok then
@@ -171,6 +154,9 @@ function ns.Refresh()
             say("A refresh failed; use /fzt status for the API error.")
         end
         lastError = message
+        lastPause = "An API error interrupted the update."
+    elseif not lastPause then
+        lastSuccess = ns.Call(GetTime)
     end
 end
 
@@ -184,10 +170,11 @@ local function requestRefresh()
 end
 
 local function status()
+    local currentZone = ns.ReadZone()
     say("v" .. VERSION .. " " .. (db.enabled and "ON" or "OFF")
-        .. "; zone: " .. (lastZone and lastZone.name or "waiting") .. " (quest-log categories)")
-    if lastStats and lastStats.waiting then
-        say("Waiting for the player's zone map; current watches have been left alone.")
+        .. "; current zone: " .. (currentZone and currentZone.name or "unavailable") .. " (quest-log categories)")
+    if lastPause then
+        say("Update waiting: " .. lastPause)
     elseif lastStats and db.enabled then
         say(string.format("%d shown; %d local; %d pinned across zones; %d hidden; %d in your log.",
             lastStats.shown, lastStats.matching, lastStats.pinned, lastStats.excluded, lastStats.total))
@@ -195,6 +182,10 @@ local function status()
             say("Some watches were refused by the client (for example, its watch limit).")
         end
     end
+    say("Last applied zone: " .. (lastZone and lastZone.name or "none")
+        .. "; last event: " .. (lastEvent or "none"))
+    local now = ns.Call(GetTime)
+    if now and lastSuccess then say("Last completed refresh: " .. math.floor(now - lastSuccess) .. " seconds ago.") end
     if InCombatLockdown and InCombatLockdown() then say("Changes wait until combat ends.") end
     if not db.enabled and db.baseline then say("Restoring your previous watch choices when possible.") end
     if lastError then say("Last API error: " .. lastError) end
@@ -312,10 +303,17 @@ local function initialize()
         ns.ticker = C_Timer.NewTicker(5, function()
             if db.enabled or db.baseline then requestRefresh() end
         end)
+    else
+        local function poll()
+            if db.enabled or db.baseline then requestRefresh() end
+            C_Timer.After(5, poll)
+        end
+        C_Timer.After(5, poll)
     end
 end
 
 frame:SetScript("OnEvent", function(_, event, ...)
+    lastEvent = event
     if event == "ADDON_LOADED" then
         if ... == ADDON_NAME then initialize()
         elseif ready and ns.InstallMenu then ns.InstallMenu() end
